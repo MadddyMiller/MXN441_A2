@@ -226,57 +226,137 @@ class MixConv(nn.Module):
     
 
 # MCF Module 
-
 class MCF(nn.Module):
-    def __init__(self, dim, expansion=4):
-        super().__init__()
-        dim2 = dim * expansion
-        
-        self.dwconv = nn.Conv2d(dim, dim, kernel_size=3, padding=1, groups=dim)
-        self.norm1 = nn.BatchNorm2d(dim)  # added
-        
-        self.conv1 = nn.Conv2d(dim, dim2, kernel_size=1)
-        self.norm2 = nn.BatchNorm2d(dim2)  # added
-        
-        self.mixconv = MixConv(dim2)
-        self.norm3 = nn.BatchNorm2d(dim2)  # added
-        
-        self.conv2 = nn.Conv2d(dim2, dim, kernel_size=1)
-        
-        self.act = nn.GELU()
-        
-    def forward(self, x):
-        B, N, C = x.shape
-        
-        cls_token = x[:, :1]
-        x = x[:, 1:]
-        
-        num_patches = x.shape[1]
-        H = W = int(num_patches ** 0.5)
-        
-        x = x.reshape(B, H, W, C).permute(0, 3, 1, 2)
-        
-        x = self.dwconv(x)
-        x = self.norm1(x)  # added
-        x = self.act(x)
-        
-        x = self.conv1(x)
-        x = self.norm2(x)  # added
-        x = self.act(x)
-        
-        x = self.mixconv(x)
-        x = self.norm3(x)  # added
-        x = self.act(x)
-        
-        x = self.conv2(x)
-        
-        x = x.flatten(2).transpose(1, 2)
-        x = torch.cat([cls_token, x], dim=1)
-        return x
+"""
+Mixed Convolution Feed-Forward (MCF) module.
+
+Replaces the standard transformer feed-forward network with a
+convolutional module that combines depth-wise convolution,
+channel expansion, and MixConv operations to capture
+multi-scale spatial features.
+
+Args:
+    dim (int): Token embedding dimension.
+    expansion (int): Channel expansion factor applied before
+        MixConv.
+
+Input:
+    x (Tensor): Token sequence of shape
+        (B, N+1, dim).
+
+Output:
+    x (Tensor): Updated token sequence of shape
+        (B, N+1, dim).
+"""
+
+def __init__(self, dim, expansion=4):
+    super().__init__()
+
+    # Store hyperparameters
+    dim2 = dim * expansion
+
+    # --- Depth-wise convolution ---
+    self.dwconv = nn.Conv2d(
+        dim,
+        dim,
+        kernel_size=3,
+        padding=1,
+        groups=dim
+    )
+    self.norm1 = nn.BatchNorm2d(dim)
+
+    # --- Channel expansion ---
+    self.conv1 = nn.Conv2d(
+        dim,
+        dim2,
+        kernel_size=1
+    )
+    self.norm2 = nn.BatchNorm2d(dim2)
+
+    # --- Multi-scale convolution ---
+    self.mixconv = MixConv(dim2)
+    self.norm3 = nn.BatchNorm2d(dim2)
+
+    # --- Channel projection ---
+    self.conv2 = nn.Conv2d(
+        dim2,
+        dim,
+        kernel_size=1
+    )
+
+    self.act = nn.GELU()
+
+def forward(self, x):
+
+    # --- Extract tensor dimensions ---
+    B, N, C = x.shape
+
+    # --- Separate CLS token ---
+    cls_token = x[:, :1]
+    x = x[:, 1:]
+
+    # --- Reshape tokens to feature map ---
+    num_patches = x.shape[1]
+    H = W = int(num_patches ** 0.5)
+
+    x = x.reshape(
+        B,
+        H,
+        W,
+        C
+    ).permute(0, 3, 1, 2)
+
+    # --- Depth-wise convolution ---
+    x = self.dwconv(x)
+    x = self.norm1(x)
+    x = self.act(x)
+
+    # --- Channel expansion ---
+    x = self.conv1(x)
+    x = self.norm2(x)
+    x = self.act(x)
+
+    # --- Multi-scale convolution ---
+    x = self.mixconv(x)
+    x = self.norm3(x)
+    x = self.act(x)
+
+    # --- Channel projection ---
+    x = self.conv2(x)
+
+    # --- Restore token sequence ---
+    x = x.flatten(2).transpose(1, 2)
+    x = torch.cat(
+        [cls_token, x],
+        dim=1
+    )
+
+    return x
     
 
-# MSA Module 
+# Multi-head Self-Attention  Module 
 class MSA(nn.Module):
+"""
+Multi-Head Self-Attention (MSA).
+
+Applies self-attention to a sequence of input tokens and returns
+both the updated token representations and attention weights.
+
+Args:
+    dim (int): Token embedding dimension.
+    heads (int): Number of attention heads.
+
+Input:
+    x (Tensor): Token sequence of shape
+        (B, N+1, dim).
+
+Output:
+    out (Tensor): Updated token sequence of shape
+        (B, N+1, dim).
+    attn (Tensor): Multi-head attention weights of shape
+        (B, heads, N+1, N+1).
+"""
+  
     def __init__(self, dim, heads=8):
         super().__init__()
         
@@ -300,17 +380,27 @@ class MSA(nn.Module):
 # Encoder Layer 
 class EncoderLayer(nn.Module):
     """
-    Encoder layer, comprised of a Multihead Self-Attention Module and a Mixed Convolutional Feed-forward module. 
+    Transformer encoder layer.
 
+    Consists of a Multi-Head Self-Attention (MSA) module followed
+    by a Mixed Convolution Feed-Forward (MCF) module, with residual
+    connections and layer normalisation applied before each module.
+    
     Args:
-        
+        dim (int): Token embedding dimension.
+        heads (int): Number of attention heads.
 
     Input:
-        
-
+        x (Tensor): Token sequence of shape
+            (B, N+1, dim).
+    
     Output:
-        
+        x (Tensor): Updated token sequence of shape
+            (B, N+1, dim).
+        attn_map (Tensor): Multi-head attention weights of shape
+            (B, heads, N+1, N+1).
     """
+
     def __init__(self, dim, heads = 8):
         super().__init__()
             
@@ -323,14 +413,12 @@ class EncoderLayer(nn.Module):
     def forward(self, x):
         # Run MSA Layer 
         attn_out, attn_map = self.msa(self.norm1(x))
-
-        # *** CHECK
-        #print(attn_map.shape)
         
         x = x + attn_out
 
         # Run MCF Layer 
         x = x + self.mcf(self.norm2(x))
+       
         return x, attn_map
         
     
@@ -353,57 +441,61 @@ class FinalEncoderLayer(nn.Module):
 
 # MFS 
 class MFS(nn.Module):
-    def __init__(self, M):
-        super().__init__()
-        self.M = M
+"""
+Multi-Layer Feature Selection (MFS).
 
-    def forward(self, attn, tokens):
-        """
-        Multi-layer Feature Selection Module.
+```
+Selects the top M discriminative patch tokens based on the
+Hadamard product of CLS-token attention across all attention heads.
+
+Args:
+    M (int): Number of patch tokens to select.
+
+Input:
+    attn (Tensor): Multi-head attention weights of shape
+        (B, num_heads, N+1, N+1).
+    tokens (Tensor): Token features of shape
+        (B, N+1, dim).
+
+Output:
+    chosen (Tensor): Selected patch tokens of shape
+        (B, M, dim).
+"""
+
+def __init__(self, M):
+    super().__init__()
+
+    # Store hyperparameters
+    self.M = M
+
+def forward(self, attn, tokens):
+
+    # --- Extract tensor dimensions ---
+    B, num_heads, N_plus_1, _ = attn.shape
+    N = N_plus_1 - 1
+
+    # --- Extract CLS-to-patch attention ---
+    cls_attn_per_head = attn[:, :, 0, :]
+    cls_attn_per_head = cls_attn_per_head[:, :, 1:]
+
+    # --- Aggregate attention using Hadamard product ---
+    cls_attn_aggregated = cls_attn_per_head[:, 0, :]
+
+    for h in range(1, num_heads):
+        cls_attn_aggregated *= cls_attn_per_head[:, h, :]
+
+    # DISCLAIMER: AI suggested normalising attention scores for stability
+    cls_attn_aggregated = cls_attn_aggregated / (cls_attn_aggregated.sum(dim=-1, keepdim=True) + 1e-8)
+
+    # --- Select top M tokens ---
+    topk_indices = torch.topk(cls_attn_aggregated, self.M, dim=-1).indices  # (B, M)
         
-        Selects top M discriminative tokens based on Hadamard product 
-        of CLS attention across all heads.
-        
-        Args:
-            attn: (B, num_heads, N+1, N+1) - multi-head attention weights from ONE layer
-            tokens: (B, N+1, dim) - token features (CLS + patches)
-        
-        Returns:
-            chosen: (B, M, dim) - selected patch tokens
-        """
-        B, num_heads, N_plus_1, _ = attn.shape
-        N = N_plus_1 - 1  # Number of patch tokens
-        
-        # --- Equation 5: Extract CLS attention from each head ---
-        # For each head i, get ail = [ai0, ai1, ..., aiN]
-        # This is the CLS token's (index 0) attention to all tokens
-        cls_attn_per_head = attn[:, :, 0, :]  # (B, num_heads, N+1)
-        
-        # Remove CLS-to-CLS attention (we only want CLS-to-patch)
-        cls_attn_per_head = cls_attn_per_head[:, :, 1:]  # (B, num_heads, N)
-        
-        # --- Equation 4: Hadamard product across K heads ---
-        # Al = a0l ⊙ a1l ⊙ ... ⊙ a(K-1)l
-        cls_attn_aggregated = cls_attn_per_head[:, 0, :]  # Start with head 0: (B, N)
-        
-        for h in range(1, num_heads):
-            cls_attn_aggregated = cls_attn_aggregated * cls_attn_per_head[:, h, :]  # Element-wise multiply
-        
-        # --- Normalization (for numerical stability) ---
-        # Not explicitly in paper, but necessary to prevent vanishing
-        cls_attn_aggregated = cls_attn_aggregated / (cls_attn_aggregated.sum(dim=-1, keepdim=True) + 1e-8)
-        
-        # --- Equation 6: Select top M tokens ---
-        # "sort A0l and pick M tokens with the highest values"
-        topk_indices = torch.topk(cls_attn_aggregated, self.M, dim=-1).indices  # (B, M)
-        
-        # --- Gather selected tokens ---
-        batch_idx = torch.arange(B, device=tokens.device).unsqueeze(1)  # (B, 1)
-        patch_tokens = tokens[:, 1:, :]  # Exclude CLS token: (B, N, dim)
-        chosen = patch_tokens[batch_idx, topk_indices]  # (B, M, dim)
-        
-        return chosen
-    
+    # --- Gather selected tokens ---
+    batch_idx = torch.arange(B, device=tokens.device).unsqueeze(1)  # (B, 1)
+    patch_tokens = tokens[:, 1:, :]  # Exclude CLS token: (B, N, dim)
+    chosen = patch_tokens[batch_idx, topk_indices]  # (B, M, dim)
+
+    return chosen
 
 # HVC Net 
 class HVC(nn.Module):
@@ -432,10 +524,9 @@ class HVC(nn.Module):
 
         self.head = nn.Linear(dim, num_classes)
         
-        # ✅ ADD THIS LINE: Initialize weights
         self._init_weights()
     
-    # ✅ ADD THIS ENTIRE METHOD:
+    # DISCLAIMER: _init_weights section was suggested by Claude to stabilise training
     def _init_weights(self):
         """
         Initialize model weights using best practices for transformers.
@@ -467,10 +558,10 @@ class HVC(nn.Module):
         nn.init.trunc_normal_(self.mit.cls_token, std=0.02)
 
     def forward(self, x):
-        ### Run MIT to generate patches 
+        # Run MIT to generate patches 
         x = self.mit(x)
 
-        # Running Encoder layers
+        # Run encoder layers
         selected_tokens = []
 
         for layer in self.feature_layers:
@@ -481,7 +572,8 @@ class HVC(nn.Module):
         cls = x[:, :1]
 
         fused = torch.cat([cls] + selected_tokens, dim=1)
-        # outputting Results 
+        
+        # Output results
         fused, _ = self.final_layer(fused)
         out = self.head(fused[:, 0])
 
